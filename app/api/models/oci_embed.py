@@ -13,9 +13,11 @@ from oci.generative_ai_inference import GenerativeAiInferenceClient
 
 from api.setting import (
     DEBUG,
-    CLIENT_KWARGS, 
-    INFERENCE_ENDPOINT_TEMPLATE, 
-    SUPPORTED_OCIGENAI_EMBEDDING_MODELS
+    CLIENT_KWARGS,
+    INFERENCE_ENDPOINT_TEMPLATE,
+    SUPPORTED_OCIGENAI_EMBEDDING_MODELS,
+    OCI_REGION,
+    OCI_COMPARTMENT
 )
 
 
@@ -35,6 +37,35 @@ from api.models.utils import logger
 class OCIGenAIEmbeddingsModel(BaseEmbeddingsModel, ABC):
     def __init__(self):
         self.generative_ai_inference_client = GenerativeAiInferenceClient(**CLIENT_KWARGS)
+        self.init_models()
+
+    def init_models(self):
+        """Initialize embedding models from OCI API if not loaded from yaml"""
+        if not SUPPORTED_OCIGENAI_EMBEDDING_MODELS:
+            from oci.generative_ai import GenerativeAiClient
+
+            client_kwargs = CLIENT_KWARGS.copy()
+            client_kwargs['service_endpoint'] = f"https://generativeai.{OCI_REGION}.oci.oraclecloud.com"
+            generative_ai_client = GenerativeAiClient(**client_kwargs)
+
+            list_models_response = generative_ai_client.list_models(
+                compartment_id=OCI_COMPARTMENT,
+                lifecycle_state="ACTIVE"
+            )
+
+            for model in list_models_response.data.items:
+                if "TEXT_EMBEDDINGS" in model.capabilities:
+                    model_name = model.display_name
+                    SUPPORTED_OCIGENAI_EMBEDDING_MODELS[model_name] = {
+                        "type": "embedding",
+                        "name": model_name,
+                        "model_id": model_name,
+                        "provider": model_name.split(".")[0] if "." in model_name else "UNKNOWN",
+                        "region": OCI_REGION,
+                        "compartment_id": OCI_COMPARTMENT,
+                    }
+
+            logger.info(f"Successfully loaded {len(SUPPORTED_OCIGENAI_EMBEDDING_MODELS)} embedding models from API")
 
     def _log_chat(self,content,schema):
         def shortern(input):
@@ -107,11 +138,14 @@ class OCIGenAIEmbeddingsModel(BaseEmbeddingsModel, ABC):
 
 
 def get_embeddings_model(model_id: str) -> OCIGenAIEmbeddingsModel:
-    model_name = SUPPORTED_OCIGENAI_EMBEDDING_MODELS.get(model_id, "")
-    if model_name:
+    # Create model instance first to trigger init_models() if needed
+    model_instance = OCIGenAIEmbeddingsModel()
+
+    model_info = SUPPORTED_OCIGENAI_EMBEDDING_MODELS.get(model_id, "")
+    if model_info:
         if DEBUG:
-            logger.info("model name is " + model_name["name"])
-        return OCIGenAIEmbeddingsModel()
+            logger.info("model name is " + model_info["name"])
+        return model_instance
     else:
         logger.error("Unsupported model id " + model_id)
         raise HTTPException(
